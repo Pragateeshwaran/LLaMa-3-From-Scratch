@@ -178,17 +178,22 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf")
         logits = logits.masked_fill(indices_to_remove, filter_value)
     return logits
 
-# Example usage
+
 config = Config()
 model = LlamaForCausalLM(config)
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+print(count_parameters(model))
+print(model)
 # Generate some random input
-input_ids = torch.randint(0, config.vocab_size, (1, 10))
+# input_ids = torch.randint(0, config.vocab_size, (1, 10))
 
-# Forward pass
-logits = model(input_ids)
-print(f"Output logits shape: {logits.shape}")
+# # Forward pass
+# logits = model(input_ids)
+# print(f"Output logits shape: {logits.shape}")
 
-# Generate text
-generated = model.generate(input_ids, max_length=20)
-print(f"Generated sequence shape: {generated.shape}")
+# # Generate text
+# generated = model.generate(input_ids, max_length=20)
+# print(f"Generated sequence shape: {generated.shape}")
