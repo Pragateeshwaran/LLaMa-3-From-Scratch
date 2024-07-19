@@ -59,11 +59,11 @@ class LlamaRotaryEmbedding(nn.Module):
             t = torch.arange(self.max_seq_len, device=x.device).type_as(self.inv_freq)
             freqs = torch.einsum("i,j->ij", t, self.inv_freq)
             emb = torch.cat((freqs, freqs), dim=-1)
-            self.cos_cached = emb.cos()
-            self.sin_cached = emb.sin()
+            self.cos_cached = emb.cos()[:seq_len]
+            self.sin_cached = emb.sin()[:seq_len]
         return (
-            self.cos_cached[:seq_len].unsqueeze(0),
-            self.sin_cached[:seq_len].unsqueeze(0),
+            self.cos_cached.unsqueeze(0),
+            self.sin_cached.unsqueeze(0),
         )
 
 def rotate_half(x):
@@ -147,10 +147,13 @@ class LlamaForCausalLM(nn.Module):
         self.model = LlamaModel(config)
         self.lm_head = nn.Linear(config.embedding_size, config.vocab_size, bias=False)
 
-    def forward(self, input_ids, attention_mask=None):
+    def forward(self, input_ids, attention_mask=None, target=None):
         hidden_states = self.model(input_ids, attention_mask)
         logits = self.lm_head(hidden_states)
-        return logits
+        if target is None:
+            return logits
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target.view(-1))
+        return loss
 
     def generate(self, input_ids, max_length, temperature=1.0, top_k=50, top_p=0.95):
         for _ in range(max_length - input_ids.size(1)):
@@ -178,22 +181,22 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf")
         logits = logits.masked_fill(indices_to_remove, filter_value)
     return logits
 
+def Model_loader():
+    config = Config()
+    model = LlamaForCausalLM(config)
+    return model, sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-config = Config()
-model = LlamaForCausalLM(config)
+# Example usage:
+# model, num_params = Model_loader()
+# print(f"Number of parameters: {num_params}")
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-print(count_parameters(model))
-print(model)
 # Generate some random input
 # input_ids = torch.randint(0, config.vocab_size, (1, 10))
 
-# # Forward pass
+# Forward pass
 # logits = model(input_ids)
 # print(f"Output logits shape: {logits.shape}")
 
-# # Generate text
+# Generate text
 # generated = model.generate(input_ids, max_length=20)
 # print(f"Generated sequence shape: {generated.shape}")
