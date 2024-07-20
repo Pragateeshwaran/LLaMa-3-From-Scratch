@@ -88,7 +88,7 @@ class LlamaSdpaAttention(nn.Module):
         
         self.rotary_emb = LlamaRotaryEmbedding(self.head_dim)
 
-    def forward(self, hidden_states, attention_mask=None):
+    def forward(self, hidden_states ):
         bsz, q_len, _ = hidden_states.size()
 
         q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
@@ -98,7 +98,7 @@ class LlamaSdpaAttention(nn.Module):
         cos, sin = self.rotary_emb(q, seq_len=q_len)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        attn_output = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
+        attn_output = F.scaled_dot_product_attention(q, k, v, is_causal=True) 
         attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, q_len, -1)
         
         return self.o_proj(attn_output)
@@ -111,10 +111,10 @@ class LlamaDecoderLayer(nn.Module):
         self.input_layernorm = LlamaRMSNorm(config.embedding_size, config.eps)
         self.post_attention_layernorm = LlamaRMSNorm(config.embedding_size, config.eps)
 
-    def forward(self, hidden_states, attention_mask=None):
+    def forward(self, hidden_states ):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, attention_mask)
+        hidden_states = self.self_attn(hidden_states)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -131,11 +131,11 @@ class LlamaModel(nn.Module):
         self.layers = nn.ModuleList([LlamaDecoderLayer(config) for _ in range(config.block_count)])
         self.norm = LlamaRMSNorm(config.embedding_size, config.eps)
 
-    def forward(self, input_ids, attention_mask=None):
+    def forward(self, input_ids ):
         hidden_states = self.embed_tokens(input_ids)
 
         for layer in self.layers:
-            hidden_states = layer(hidden_states, attention_mask)
+            hidden_states = layer(hidden_states)
 
         hidden_states = self.norm(hidden_states)
 
@@ -147,8 +147,8 @@ class LlamaForCausalLM(nn.Module):
         self.model = LlamaModel(config)
         self.lm_head = nn.Linear(config.embedding_size, config.vocab_size, bias=False)
 
-    def forward(self, input_ids, attention_mask=None, target=None):
-        hidden_states = self.model(input_ids, attention_mask)
+    def forward(self, input_ids, target=None):
+        hidden_states = self.model(input_ids)
         logits = self.lm_head(hidden_states)
         if target is None:
             return logits
