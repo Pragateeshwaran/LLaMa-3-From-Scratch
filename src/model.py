@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
+import transformers
+from huggingface_hub import login
 
 class Config:
     def __init__(self):
@@ -88,7 +89,7 @@ class LlamaSdpaAttention(nn.Module):
         
         self.rotary_emb = LlamaRotaryEmbedding(self.head_dim)
 
-    def forward(self, hidden_states ):
+    def forward(self, hidden_states, attention_mask=None):
         bsz, q_len, _ = hidden_states.size()
 
         q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
@@ -98,7 +99,7 @@ class LlamaSdpaAttention(nn.Module):
         cos, sin = self.rotary_emb(q, seq_len=q_len)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        attn_output = F.scaled_dot_product_attention(q, k, v, is_causal=True) 
+        attn_output = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
         attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, q_len, -1)
         
         return self.o_proj(attn_output)
@@ -111,10 +112,10 @@ class LlamaDecoderLayer(nn.Module):
         self.input_layernorm = LlamaRMSNorm(config.embedding_size, config.eps)
         self.post_attention_layernorm = LlamaRMSNorm(config.embedding_size, config.eps)
 
-    def forward(self, hidden_states ):
+    def forward(self, hidden_states, attention_mask=None):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states)
+        hidden_states = self.self_attn(hidden_states, attention_mask)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -131,11 +132,11 @@ class LlamaModel(nn.Module):
         self.layers = nn.ModuleList([LlamaDecoderLayer(config) for _ in range(config.block_count)])
         self.norm = LlamaRMSNorm(config.embedding_size, config.eps)
 
-    def forward(self, input_ids ):
+    def forward(self, input_ids, attention_mask=None):
         hidden_states = self.embed_tokens(input_ids)
 
         for layer in self.layers:
-            hidden_states = layer(hidden_states)
+            hidden_states = layer(hidden_states, attention_mask)
 
         hidden_states = self.norm(hidden_states)
 
@@ -147,17 +148,19 @@ class LlamaForCausalLM(nn.Module):
         self.model = LlamaModel(config)
         self.lm_head = nn.Linear(config.embedding_size, config.vocab_size, bias=False)
 
-    def forward(self, input_ids, target=None):
-        hidden_states = self.model(input_ids)
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        hidden_states = self.model(input_ids, attention_mask)
         logits = self.lm_head(hidden_states)
-        if target is None:
-            return logits
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target.view(-1))
-        return loss
+        
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+        
+        return logits, loss
 
     def generate(self, input_ids, max_length, temperature=1.0, top_k=50, top_p=0.95):
         for _ in range(max_length - input_ids.size(1)):
-            outputs = self(input_ids)
+            outputs, _ = self(input_ids)
             next_token_logits = outputs[:, -1, :] / temperature
             next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
             probs = F.softmax(next_token_logits, dim=-1)
@@ -181,22 +184,39 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf")
         logits = logits.masked_fill(indices_to_remove, filter_value)
     return logits
 
+config = Config()
+model = LlamaForCausalLM(config)
+
 def Model_loader():
-    config = Config()
-    model = LlamaForCausalLM(config)
     return model, sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-# Example usage:
-# model, num_params = Model_loader()
-# print(f"Number of parameters: {num_params}")
+print(model)
 
-# Generate some random input
-# input_ids = torch.randint(0, config.vocab_size, (1, 10))
+# Hugging Face login
+login(token='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')
 
-# Forward pass
-# logits = model(input_ids)
-# print(f"Output logits shape: {logits.shape}")
+model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+cache_dir = r'D:\\hugging-models\\llama3-meta-pragateesh'
 
-# Generate text
-# generated = model.generate(input_ids, max_length=20)
-# print(f"Generated sequence shape: {generated.shape}")
+tokenizer = transformers.AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
+
+max_length = 50 
+num_freq = 3 
+
+X = torch.tensor(tokenizer.encode("I love you")).unsqueeze(0).repeat(num_freq, 1)
+torch.manual_seed(88)
+
+while X.size(1) < max_length:
+    with torch.no_grad():
+        logits, _ = model(X)
+        logits = logits[:, -1, :]
+        probs = F.softmax(logits, dim=-1)
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+        ix = torch.multinomial(topk_probs, 1)
+        x_cols = torch.gather(topk_indices, -1, ix)
+        X = torch.cat((X, x_cols), dim=-1)
+
+# Decode the generated sequences
+for i in range(num_freq):
+    generated_text = tokenizer.decode(X[i], skip_special_tokens=True)
+    print(f"Generated text {i+1}: {generated_text}")
