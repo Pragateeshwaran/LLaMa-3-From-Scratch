@@ -1,7 +1,7 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 class ModelConfig:
     def __init__(self):
@@ -64,6 +64,22 @@ def repeat_kv(x: torch.Tensor, n_rep: int):
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
 
+def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf")):
+    top_k = min(top_k, logits.size(-1))
+    if top_k > 0:
+        values, _ = torch.topk(logits, top_k)
+        min_values = values[:, -1].unsqueeze(1).expand_as(logits)
+        logits = torch.where(logits < min_values, torch.full_like(logits, filter_value), logits)
+    if top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        sorted_indices_to_remove = cumulative_probs > top_p
+        sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+        sorted_indices_to_remove[:, 0] = 0
+        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+        logits = logits.masked_fill(indices_to_remove, filter_value)
+    return logits
+
 class LlamaAttention(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -77,6 +93,11 @@ class LlamaAttention(nn.Module):
         self.v_proj = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(config.n_heads * self.head_dim, config.dim, bias=False)
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        if not self.flash:
+            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+            mask = torch.full((1, 1, config.max_seq_len, config.max_seq_len), float("-inf"))
+            mask = torch.triu(mask, diagonal=1)
+            self.register_buffer("mask", mask)
 
     def forward(self, x: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor):
         bsz, seqlen, _ = x.shape
@@ -90,7 +111,14 @@ class LlamaAttention(nn.Module):
         xq = xq.transpose(1, 2)
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
-        output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=0.0, is_causal=True)
+        if self.flash:
+            output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=0.0, is_causal=True)
+        else:
+            scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+            assert hasattr(self, 'mask')
+            scores = scores + self.mask[:, :, :seqlen, :seqlen]
+            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+            output = torch.matmul(scores, xv)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         output = self.o_proj(output)
         return output
@@ -126,27 +154,12 @@ class LlamaModel(nn.Module):
         self.layers = nn.ModuleList([LlamaDecoderLayer(config) for _ in range(config.n_layers)])
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
-        self.output.weight = self.embed_tokens.weight
-        freqs_cos, freqs_sin = precompute_freqs_cis(config.dim // config.n_heads, config.max_seq_len)
-        self.register_buffer("freqs_cos", freqs_cos, persistent=False)
-        self.register_buffer("freqs_sin", freqs_sin, persistent=False)
-        self.apply(self._init_weights)
-        for pn, p in self.named_parameters():
-            if pn.endswith("proj.weight"):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * self.config.n_layers))
+        self.freqs_cos, self.freqs_sin = precompute_freqs_cis(config.dim // 2, config.max_seq_len)
 
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight)
-        elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0, std=0.02)
-
-    def forward(self, tokens: torch.Tensor, targets: torch.Tensor = None):
-        batch_size, seqlen = tokens.shape
-        h = self.embed_tokens(tokens)
-        freqs_cos, freqs_sin = self.freqs_cos[:seqlen], self.freqs_sin[:seqlen]
+    def forward(self, input_ids, targets=None):
+        h = self.embed_tokens(input_ids)
         for layer in self.layers:
-            h = layer(h, freqs_cos, freqs_sin)
+            h = layer(h, self.freqs_cos[:h.size(1)], self.freqs_sin[:h.size(1)])
         h = self.norm(h)
         output = self.output(h)
         if targets is not None:
@@ -155,6 +168,16 @@ class LlamaModel(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             return output, loss
         return output, None
+
+    def generate(self, input_ids, max_length, temperature=1.0, top_k=50, top_p=0.95):
+        for _ in range(max_length - input_ids.size(1)):
+            outputs, _ = self(input_ids)
+            next_token_logits = outputs[:, -1, :] / temperature
+            next_token_logits = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
+            probs = F.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            input_ids = torch.cat([input_ids, next_token], dim=-1)
+        return input_ids
 
 def compute_total_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
