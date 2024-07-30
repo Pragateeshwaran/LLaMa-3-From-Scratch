@@ -92,12 +92,8 @@ class LlamaAttention(nn.Module):
         self.k_proj = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(config.n_heads * self.head_dim, config.dim, bias=False)
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            mask = torch.full((1, 1, config.max_seq_len, config.max_seq_len), float("-inf"))
-            mask = torch.triu(mask, diagonal=1)
-            self.register_buffer("mask", mask)
+
+         
 
     def forward(self, x: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor):
         bsz, seqlen, _ = x.shape
@@ -110,15 +106,8 @@ class LlamaAttention(nn.Module):
         xv = repeat_kv(xv, self.n_rep)
         xq = xq.transpose(1, 2)
         xk = xk.transpose(1, 2)
-        xv = xv.transpose(1, 2)
-        if self.flash:
-            output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=0.0, is_causal=True)
-        else:
-            scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
-            assert hasattr(self, 'mask')
-            scores = scores + self.mask[:, :, :seqlen, :seqlen]
-            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-            output = torch.matmul(scores, xv)
+        xv = xv.transpose(1, 2) 
+        output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=0.0, is_causal=True)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         output = self.o_proj(output)
         return output
