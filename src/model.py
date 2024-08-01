@@ -171,14 +171,17 @@ def compute_total_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
     return total_params
 
-config = ModelConfig()
-model = LlamaModel(config)
-total_params = compute_total_parameters(model)
-print(f"Total parameters: {total_params}")
+def load_model():
+    config = ModelConfig()
+    model = LlamaModel(config)
+    total_params = compute_total_parameters(model)
+    print(f"Total parameters: {total_params}")
+    return model
 
-batch_size = 2
-seq_len = 10
-input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-output, loss = model(input_ids)
-print("Output shape:", output.shape)
-print("Loss:", loss)
+# if __name__ == "main":
+    # batch_size = 2
+    # seq_len = 10
+    # input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+    # output, loss = model(input_ids)
+    # print("Output shape:", output.shape)
+    # print("Loss:", loss)
