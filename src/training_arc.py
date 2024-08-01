@@ -5,16 +5,30 @@ import time
 import model as Model
 import numpy as np 
 import os 
+import math
 
-model, parameter_count = Model.load_model()
+model = Model.load_model()
 torch.set_float32_matmul_precision('high')
 device = 'cpu'
 # device = 'cuda' if torch.cuda.is_available() else "cpu"
 # Model = Model.to(device)
 
 #------------------------configurations--------------------------- 
-max_epochs = 100000
-max_lr = 3e-4
+max_epochs = 100000     # as per andrej code
+max_lr = 3e-4           # as per paper
+min_lr = max_lr * 0.1   # as per paper
+warmup_steps = 2000     # as per paper
+weight_decay = 0.1      # as per paper
+Opti_Beta1 = 0.9        # as per paper
+Opti_Beta2 = 0.5        # as per paper
+Opti_epi = 1e-5         # as per paper
+B = 16                  # as per GPU capacity
+T = 512                 # as per GPU capacity
+total_batch_size = 524288
+assert total_batch_size % (B*T) == 0, "make sure total batch size is divisible by B*T"
+grad_accum_steps = total_batch_size // (B*T)
+print(f"Total Batch size is {total_batch_size}")
+print(f"Gram accumulation is {grad_accum_steps}")
 
 #-------------------------Data Loader-----------------------------
 def load_tokens(filename):
@@ -28,7 +42,7 @@ class DataLoaderLite:
         self.B = B
         self.T = T
         assert split in {'train', 'val'}
-        data_root = r"F:\works\A-important\A-neurals\Vortex-Language-Models\GPT-2 From scratch\edu_fineweb10B"  
+        data_root =r''
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)
@@ -55,6 +69,27 @@ class DataLoaderLite:
             self.current_position = 0
         return x.to(device), y.to(device)
 
+train_loader = DataLoaderLite(B, T, 'train')
+val_loader = DataLoaderLite(B, T, 'val')
+# ------------------------------CheckPoints--------------------------------------------
+log_dir = r"F:\works\A-important\A-neurals\LLaMa-3-From-Scratch\logs"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "training_log.txt")
+
+# ------------------------------Optimizers----------------------------------------------
+def get_lr(it): 
+    if it < warmup_steps:
+        return max_lr * (it+1) / warmup_steps 
+    if it > max_epochs:
+        return min_lr 
+    decay_ratio = (it - warmup_steps) / (max_epochs - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  
+    return min_lr + coeff * (max_lr - min_lr)
+
+optimizer = model.configure_optimizers(weight_decay= weight_decay, learning_rate= max_lr, b1= Opti_Beta1, b2= Opti_Beta2, eps= Opti_epi)
+
+print(optimizer)
 
 for iter in range(max_epochs):
     time_start = time.time()
