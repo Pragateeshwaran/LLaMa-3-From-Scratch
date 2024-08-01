@@ -2,7 +2,11 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import inspect 
 
+device = 'cpu'
+# device = 'cuda' if torch.cuda.is_available() else "cpu"
+# Model = Model.to(device) 
 class ModelConfig:
     def __init__(self):
         self.vocab_size = 128256
@@ -166,6 +170,25 @@ class LlamaModel(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             return output, loss
         return output, None
+    
+    def configure_optimizers(self, weight_decay, learning_rate, b1, b2, eps):
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0.0}
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device == "cuda"
+        print(f"using fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(b1,b2), eps=eps, fused=use_fused)
+        return optimizer
 
 def compute_total_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
