@@ -96,3 +96,4 @@ for iter in range(max_epochs):
     
     time_end   = time.time()
     print(f"Iter {iter} | Time {time_end - time_start} | ")
+    break
