@@ -6,6 +6,7 @@ import model as Model
 import numpy as np 
 import os 
 import math
+from Tokenizers import encoder, decoder
 
 model = Model.load_model()
 torch.set_float32_matmul_precision('high')
@@ -90,10 +91,85 @@ def get_lr(it):
 optimizer = model.configure_optimizers(weight_decay= weight_decay, learning_rate= max_lr, b1= Opti_Beta1, b2= Opti_Beta2, eps= Opti_epi)
 
 print(optimizer)
+val_lossi, trainl_lossi = [], []
 
 for iter in range(max_epochs):
+    last_step = (iter == (max_epochs - 1))
     time_start = time.time()
-    
-    time_end   = time.time()
-    print(f"Iter {iter} | Time {time_end - time_start} | ")
-    break
+    if iter % 100 == 0:
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_accum = 0
+            val_steps = 20
+            for _ in range(val_steps):
+                x, y = val_loader.next_batch()
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    logits, loss = model(x, y)
+                loss = loss / val_steps
+                val_accum += loss.detach()
+        print(f"validation loss: {val_accum.item():.4f}")
+        val_lossi.append(val_accum.item())
+        with open(log_file, "a") as f:
+            f.write(f"{iter} val {val_accum.item():.4f}\n")
+        if iter > 0 and (iter % 5000 == 0 or last_step):
+            checkpoint_path = os.path.join(log_dir, f"model_{iter:05d}.pt")
+            checkpoint = {
+                'model': model.state_dict(),
+                'config': model.config,
+                'step': iter,
+                'val_loss': val_accum.item()
+            }
+            torch.save(checkpoint, checkpoint_path)
+
+    if (iter > 0 and iter % 250 == 0) or last_step:
+        model.eval()
+        num_return_sequences = 4
+        max_length = 32
+        tokens = encoder("What really peace means")
+        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+        xgen = tokens.to(device)
+        sample_rng = torch.Generator(device=device)
+        sample_rng.manual_seed(42)
+        while xgen.size(1) < max_length:
+            with torch.no_grad():
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    logits, _ = model(xgen)
+                logits = logits[:, -1, :]
+                probs = F.softmax(logits, dim=-1)
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+                ix = torch.multinomial(topk_probs, 1, generator=sample_rng)
+                xcol = torch.gather(topk_indices, -1, ix)
+                xgen = torch.cat((xgen, xcol), dim=1)
+        for i in range(num_return_sequences):
+            tokens = xgen[i, :max_length].tolist()
+            decoded = decoder(tokens)
+            print(f"\nsample {i}: {decoded}\n")
+
+    model.train()
+    optimizer.zero_grad()
+    loss_accum = 0.0
+    for micro_step in range(grad_accum_steps):
+        x, y = train_loader.next_batch()
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            logits, loss = model(x, y)
+        loss = loss / grad_accum_steps
+        loss_accum += loss.detach()
+        loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    lr = get_lr(iter)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    optimizer.step()
+    if device == "cuda":
+        torch.cuda.synchronize()
+    time_end = time.time()
+    dt = time_end - time_start
+    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+    tokens_per_sec = tokens_processed / dt
+    trainl_lossi(loss_accum.item())
+    print(f"step {iter:5d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+    with open(log_file, "a") as f:
+        f.write(f"{iter} train {loss_accum.item():.6f}\n")
+        
