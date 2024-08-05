@@ -15,7 +15,7 @@ device = 'cpu'
 # Model = Model.to(device)
 
 #------------------------configurations--------------------------- 
-max_epochs = 100000     # as per andrej code
+max_epochs = 100000     
 max_lr = 3e-4           # as per paper
 min_lr = max_lr * 0.1   # as per paper
 warmup_steps = 2000     # as per paper
@@ -43,7 +43,7 @@ class DataLoaderLite:
         self.B = B
         self.T = T
         assert split in {'train', 'val'}
-        data_root =r''
+        data_root =r'F:\works\A-important\A-neurals\LLaMa-3-From-Scratch\src\Dataset'
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)
@@ -122,7 +122,7 @@ for iter in range(max_epochs):
             }
             torch.save(checkpoint, checkpoint_path)
 
-    if (iter > 0 and iter % 250 == 0) or last_step:
+    if (iter > 0 and iter % 250 == 0) or last_step or (iter == 0):
         model.eval()
         num_return_sequences = 4
         max_length = 32
