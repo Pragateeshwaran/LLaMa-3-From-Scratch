@@ -18,7 +18,7 @@ class ModelConfig:
         self.hidden_dim = 14336
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float):
+    def __init__(self, dim, eps):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
@@ -41,8 +41,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
 def apply_rotary_emb(xq, xk, freqs_cos, freqs_sin):
     xq_r, xq_i = xq.float().reshape(*xq.shape[:-1], -1, 2).unbind(-1)
     xk_r, xk_i = xk.float().reshape(*xk.shape[:-1], -1, 2).unbind(-1)
-    
-    # Ensure proper broadcasting
+     
     freqs_cos = freqs_cos.view(1, freqs_cos.shape[0], 1, freqs_cos.shape[1])
     freqs_sin = freqs_sin.view(1, freqs_sin.shape[0], 1, freqs_sin.shape[1])
     
@@ -56,7 +55,7 @@ def apply_rotary_emb(xq, xk, freqs_cos, freqs_sin):
     
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
-def repeat_kv(x: torch.Tensor, n_rep: int):
+def repeat_kv(x, n_rep):
     bs, slen, n_kv_heads, head_dim = x.shape
     if n_rep == 1:
         return x
@@ -80,12 +79,12 @@ class LlamaAttention(nn.Module):
         self.o_proj = nn.Linear(config.n_heads * self.head_dim, config.dim, bias=False)
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+            print("WARNING: Flash Attention requires PyTorch >= 2.0")
             mask = torch.full((1, 1, config.max_seq_len, config.max_seq_len), float("-inf"))
             mask = torch.triu(mask, diagonal=1)
             self.register_buffer("mask", mask)
 
-    def forward(self, x: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor):
+    def forward(self, x, freqs_cos, freqs_sin):
         bsz, seqlen, _ = x.shape
         xq, xk, xv = self.q_proj(x), self.k_proj(x), self.v_proj(x)
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
@@ -110,7 +109,7 @@ class LlamaAttention(nn.Module):
         return output
 
 class LlamaMLP(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config):
         super().__init__()
         self.gate_proj = nn.Linear(config.dim, config.hidden_dim, bias=False)
         self.up_proj = nn.Linear(config.dim, config.hidden_dim, bias=False)
@@ -120,20 +119,20 @@ class LlamaMLP(nn.Module):
         return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
 class LlamaDecoderLayer(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config):
         super().__init__()
         self.self_attn = LlamaAttention(config)
         self.mlp = LlamaMLP(config)
         self.input_layernorm = RMSNorm(config.dim, eps=config.norm_eps)
         self.post_attention_layernorm = RMSNorm(config.dim, eps=config.norm_eps)
 
-    def forward(self, x: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor):
+    def forward(self, x, freqs_cos, freqs_sin):
         h = x + self.self_attn(self.input_layernorm(x), freqs_cos, freqs_sin)
         out = h + self.mlp(self.post_attention_layernorm(h))
         return out
 
 class LlamaModel(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         self.embed_tokens = nn.Embedding(config.vocab_size, config.dim)
@@ -155,7 +154,7 @@ class LlamaModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0, std=0.02)
 
-    def forward(self, tokens: torch.Tensor, targets: torch.Tensor = None):
+    def forward(self, tokens, targets = None):
         batch_size, seqlen = tokens.shape
         h = self.embed_tokens(tokens)
         freqs_cos = self.freqs_cos[:seqlen]
