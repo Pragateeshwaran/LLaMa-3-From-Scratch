@@ -95,6 +95,7 @@ val_lossi, trainl_lossi = [], []
 
 for iter in range(max_epochs):
     last_step = (iter == (max_epochs - 1))
+    print(".", end="")
     time_start = time.time()
     if iter % 100 == 0:
         model.eval()
