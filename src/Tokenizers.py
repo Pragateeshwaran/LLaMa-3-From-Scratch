@@ -4,7 +4,7 @@ from huggingface_hub import login
 
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 cache_dir = r'D:\\hugging-models\\llama3-meta-pragateesh'
-login(token='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')
+login(token='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
 
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 tokenizer = transformers.AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
