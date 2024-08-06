@@ -80,7 +80,7 @@ if __name__ == '__main__':
     local_dir = r"F:\works\A-important\A-neurals\LLaMa-3-From-Scratch\src\Dataset"
     remote_name = "sample-10BT"
     shard_size = int(1e8)   
-    hf_token = "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"  
+    hf_token = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"  
     model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     cache_dir = r'D:\hugging-models\llama3-meta-pragateesh'
 
