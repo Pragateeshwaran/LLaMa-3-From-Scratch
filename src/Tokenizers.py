@@ -4,15 +4,14 @@ from huggingface_hub import login
 
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 cache_dir = r'D:\\hugging-models\\llama3-meta-pragateesh'
-login(token='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
+login(token='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')  # Replace with your Hugging Face token
 
-model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 tokenizer = transformers.AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
 
-def encoder(input : str) -> list: 
-    return tokenizer.encode(input, add_special_tokens=False) 
+def encoder(input: str) -> list:
+    return tokenizer.encode(input, add_special_tokens=False)
 
-def decoder(input : list) -> str:
+def decoder(input: list) -> str:
     return tokenizer.decode(input)
 
 def eot():

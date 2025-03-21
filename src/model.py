@@ -4,22 +4,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 import inspect
 
-# Set device to CPU by default; uncomment to use GPU if available
-device = 'cpu'
+device = 'cpu'  # Set to CPU; uncomment below for GPU support
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# Model configuration class
 class ModelConfig:
     def __init__(self):
-        self.vocab_size = 128256  # Vocabulary size
-        self.dim = 4096           # Model dimension
-        self.n_layers = 32        # Number of transformer layers
-        self.n_heads = 32         # Number of attention heads
-        self.max_seq_len = 2048   # Maximum sequence length
-        self.norm_eps = 1e-6      # Epsilon for normalization stability
-        self.hidden_dim = 14336   # Hidden dimension for MLP
+        self.vocab_size = 128256
+        self.dim = 4096
+        self.n_layers = 32
+        self.n_heads = 32
+        self.max_seq_len = 2048
+        self.norm_eps = 1e-6
+        self.hidden_dim = 14336
 
-# RMS Normalization layer
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps):
         super().__init__()
@@ -33,34 +30,27 @@ class RMSNorm(nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
-# Precompute frequencies for rotary embeddings
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
-    t = torch.arange(end, device=device)  # Ensure device consistency
+    t = torch.arange(end, device=device)
     freqs = torch.outer(t, freqs).float()
     freqs_cos = torch.cos(freqs)
     freqs_sin = torch.sin(freqs)
-    return freqs_cos, freqs_sin
+    return污水处理_cos, freqs_sin
 
-# Apply rotary embeddings to query and key tensors
 def apply_rotary_emb(xq, xk, freqs_cos, freqs_sin):
     xq_r, xq_i = xq.float().reshape(*xq.shape[:-1], -1, 2).unbind(-1)
     xk_r, xk_i = xk.float().reshape(*xk.shape[:-1], -1, 2).unbind(-1)
-    
     freqs_cos = freqs_cos.view(1, freqs_cos.shape[0], 1, freqs_cos.shape[1])
     freqs_sin = freqs_sin.view(1, freqs_sin.shape[0], 1, freqs_sin.shape[1])
-    
     xq_out_r = xq_r * freqs_cos - xq_i * freqs_sin
     xq_out_i = xq_r * freqs_sin + xq_i * freqs_cos
     xk_out_r = xk_r * freqs_cos - xk_i * freqs_sin
     xk_out_i = xk_r * freqs_sin + xk_i * freqs_cos
-    
     xq_out = torch.stack([xq_out_r, xq_out_i], dim=-1).flatten(3)
     xk_out = torch.stack([xk_out_r, xk_out_i], dim=-1).flatten(3)
-    
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
-# Repeat key and value tensors for multi-query attention (if applicable)
 def repeat_kv(x, n_rep):
     bs, slen, n_kv_heads, head_dim = x.shape
     if n_rep == 1:
@@ -71,14 +61,13 @@ def repeat_kv(x, n_rep):
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
 
-# Attention mechanism
 class LlamaAttention(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.n_kv_heads = config.n_heads
         self.n_local_heads = config.n_heads
         self.n_local_kv_heads = self.n_kv_heads
-        self.n_rep = self.n_local_heads // self.n_local_kv_heads  # 1 in this case
+        self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = config.dim // config.n_heads
         self.q_proj = nn.Linear(config.dim, config.n_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(config.dim, self.n_kv_heads * self.head_dim, bias=False)
@@ -115,7 +104,6 @@ class LlamaAttention(nn.Module):
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.o_proj(output)
 
-# MLP (Feed-Forward Network) layer
 class LlamaMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -126,7 +114,6 @@ class LlamaMLP(nn.Module):
     def forward(self, x):
         return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
-# Decoder layer combining attention and MLP
 class LlamaDecoderLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -140,7 +127,6 @@ class LlamaDecoderLayer(nn.Module):
         out = h + self.mlp(self.post_attention_layernorm(h))
         return out
 
-# Main Llama model
 class LlamaModel(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -174,8 +160,8 @@ class LlamaModel(nn.Module):
         h = self.norm(h)
         output = self.output(h)
         if targets is not None:
-            logits = output[:, :-1, :].contiguous()
-            targets = targets[:, 1:].contiguous()
+            logits = output[:, :seqlen, :].contiguous()
+            targets = targets[:, :seqlen].contiguous()
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
             return output, loss
         return output, None
@@ -197,48 +183,8 @@ class LlamaModel(nn.Module):
         print(f"using fused AdamW: {use_fused}")
         return torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(b1, b2), eps=eps, fused=use_fused)
 
-# Utility function to compute total parameters
-def compute_total_parameters(model):
-    return sum(p.numel() for p in model.parameters())
-
-# Function to load and initialize the model
 def load_model():
     config = ModelConfig()
     model = LlamaModel(config)
-    model.to(device)  # Move model to the specified device
-    total_params = compute_total_parameters(model)
-    print(f"Total parameters: {total_params:,}")
+    model.to(device)
     return model
-
-# Example usage
-if __name__ == "__main__":
-    # Hyperparameters
-    batch_size = 2
-    seq_len = 10
-    
-    # Load model
-    model = load_model()
-    
-    # Create sample input
-    input_ids = torch.randint(0, model.config.vocab_size, (batch_size, seq_len), device=device)
-    
-    # Forward pass without targets
-    output, loss = model(input_ids)
-    print("Output shape:", output.shape)  # Should be [batch_size, seq_len, vocab_size]
-    print("Loss:", loss)  # Should be None
-    
-    # Create sample targets for loss computation
-    targets = torch.randint(0, model.config.vocab_size, (batch_size, seq_len), device=device)
-    output, loss = model(input_ids, targets)
-    print("Output shape with targets:", output.shape)
-    print("Loss with targets:", loss.item())
-    
-    # Configure optimizer
-    optimizer = model.configure_optimizers(
-        weight_decay=0.1,
-        learning_rate=3e-4,
-        b1=0.9,
-        b2=0.95,
-        eps=1e-8
-    )
-    print("Optimizer configured successfully")
