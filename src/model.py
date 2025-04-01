@@ -4,9 +4,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import inspect
 
-device = 'cpu'  # Set to CPU; uncomment below for GPU support
+# Device configuration (default to CPU; uncomment for GPU support)
+device = 'cpu'
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+# Configuration class for the model
 class ModelConfig:
     def __init__(self):
         self.vocab_size = 128256
@@ -17,6 +19,7 @@ class ModelConfig:
         self.norm_eps = 1e-6
         self.hidden_dim = 14336
 
+# RMS Normalization module
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps):
         super().__init__()
@@ -30,6 +33,17 @@ class RMSNorm(nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
+# SwiGLU activation module
+class SwiGLU(nn.Module):
+    def __init__(self, dim, hidden_dim):
+        super().__init__()
+        self.gate_proj = nn.Linear(dim, hidden_dim, bias=False)
+        self.up_proj = nn.Linear(dim, hidden_dim, bias=False)
+
+    def forward(self, x):
+        return F.silu(self.gate_proj(x)) * self.up_proj(x)
+
+# Precompute frequency components for rotary embeddings
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
     t = torch.arange(end, device=device)
@@ -38,6 +52,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs_sin = torch.sin(freqs)
     return freqs_cos, freqs_sin
 
+# Apply rotary embeddings to queries and keys
 def apply_rotary_emb(xq, xk, freqs_cos, freqs_sin):
     xq_r, xq_i = xq.float().reshape(*xq.shape[:-1], -1, 2).unbind(-1)
     xk_r, xk_i = xk.float().reshape(*xk.shape[:-1], -1, 2).unbind(-1)
@@ -51,6 +66,7 @@ def apply_rotary_emb(xq, xk, freqs_cos, freqs_sin):
     xk_out = torch.stack([xk_out_r, xk_out_i], dim=-1).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
+# Repeat key and value tensors for multi-head attention
 def repeat_kv(x, n_rep):
     bs, slen, n_kv_heads, head_dim = x.shape
     if n_rep == 1:
@@ -61,6 +77,7 @@ def repeat_kv(x, n_rep):
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
 
+# Attention module
 class LlamaAttention(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -104,16 +121,17 @@ class LlamaAttention(nn.Module):
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.o_proj(output)
 
+# MLP module with SwiGLU activation
 class LlamaMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.gate_proj = nn.Linear(config.dim, config.hidden_dim, bias=False)
-        self.up_proj = nn.Linear(config.dim, config.hidden_dim, bias=False)
+        self.swiglu = SwiGLU(config.dim, config.hidden_dim)
         self.down_proj = nn.Linear(config.hidden_dim, config.dim, bias=False)
 
     def forward(self, x):
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+        return self.down_proj(self.swiglu(x))
 
+# Decoder layer
 class LlamaDecoderLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -127,6 +145,7 @@ class LlamaDecoderLayer(nn.Module):
         out = h + self.mlp(self.post_attention_layernorm(h))
         return out
 
+# Full Llama model
 class LlamaModel(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -183,6 +202,7 @@ class LlamaModel(nn.Module):
         print(f"using fused AdamW: {use_fused}")
         return torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(b1, b2), eps=eps, fused=use_fused)
 
+# Function to load the model
 def load_model():
     config = ModelConfig()
     model = LlamaModel(config)
