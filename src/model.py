@@ -36,7 +36,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = torch.outer(t, freqs).float()
     freqs_cos = torch.cos(freqs)
     freqs_sin = torch.sin(freqs)
-    return污水处理_cos, freqs_sin
+    return freqs_cos, freqs_sin
 
 def apply_rotary_emb(xq, xk, freqs_cos, freqs_sin):
     xq_r, xq_i = xq.float().reshape(*xq.shape[:-1], -1, 2).unbind(-1)
